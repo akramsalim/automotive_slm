@@ -220,4 +220,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
   akramsalim9@gmail.com
-Project Link: [https://github.com/yourusername/automotive-slm](https://github.com/yourusername/automotive-slm)
+Project Link: [https://github.com/yourusername/automotive-slm](https://github.com/akramsalim/automotive-slm)
