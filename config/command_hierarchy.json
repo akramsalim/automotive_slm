@@ -1,0 +1,105 @@
+{
+  "climate_control": {
+    "commands": [
+      "set_temperature",
+      "adjust_fan",
+      "toggle_ac",
+      "set_zone_temperature",
+      "enable_auto_climate"
+    ],
+    "parameters": {
+      "temperature_range": [16, 30],
+      "fan_speeds": ["low", "medium", "high", "auto"],
+      "zones": ["driver", "passenger", "rear", "all"]
+    },
+    "safety_rules": {
+      "temperature_limits": {
+        "min": 16,
+        "max": 30
+      },
+      "rate_limits": {
+        "temperature_change": 5,
+        "fan_speed_change": 1
+      }
+    }
+  },
+  "navigation": {
+    "commands": [
+      "set_destination",
+      "find_route",
+      "add_waypoint",
+      "avoid_route",
+      "show_traffic"
+    ],
+    "parameters": {
+      "route_preferences": ["fastest", "eco", "scenic", "toll-free"],
+      "avoidance": ["highways", "tolls", "ferries", "traffic"]
+    },
+    "safety_rules": {
+      "input_while_moving": false,
+      "reroute_threshold": 5000, 
+      "max_waypoints": 10
+    }
+  },
+  "vehicle_control": {
+    "commands": [
+      "activate_cruise_control",
+      "set_drive_mode",
+      "adjust_suspension",
+      "enable_parking_assist",
+      "activate_lane_keeping"
+    ],
+    "parameters": {
+      "drive_modes": ["eco", "comfort", "sport", "auto"],
+      "assist_levels": ["off", "warning", "assist", "auto"],
+      "speed_settings": ["maintain", "increase", "decrease"]
+    },
+    "safety_rules": {
+      "speed_limit": 130,
+      "acceleration_limit": 0.3,
+      "minimum_follow_distance": 50,
+      "required_conditions": {
+        "cruise_control": ["speed > 30", "good_weather"],
+        "parking_assist": ["speed < 20", "daylight"]
+      }
+    }
+  },
+  "media_control": {
+    "commands": [
+      "play_media",
+      "adjust_volume",
+      "change_source",
+      "next_track",
+      "previous_track"
+    ],
+    "parameters": {
+      "sources": ["radio", "bluetooth", "usb", "streaming"],
+      "volume_levels": ["mute", "low", "medium", "high"],
+      "audio_settings": ["bass", "treble", "balance", "fade"]
+    },
+    "safety_rules": {
+      "max_volume": 85, 
+      "volume_rate_limit": 5,  
+      "source_change_delay": 1.0  
+  },
+  "system_settings": {
+    "commands": [
+      "adjust_display",
+      "update_settings",
+      "pair_device",
+      "run_diagnostics",
+      "check_status"
+    ],
+    "parameters": {
+      "display_settings": ["brightness", "mode", "layout"],
+      "system_modes": ["day", "night", "auto"],
+      "diagnostic_types": ["quick", "full", "targeted"]
+    },
+    "safety_rules": {
+      "settings_while_moving": ["brightness", "mode"],
+      "diagnostic_speed_limit": 5,
+      "update_conditions": ["parked", "engine_off"]
+    }
+  }
+}
+}

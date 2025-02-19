@@ -1,0 +1,62 @@
+model:
+  phi-2:
+    name: "microsoft/phi-2"
+    type: "causal_lm"
+    max_length: 512
+  bert-small:
+    name: "prajjwal1/bert-small"
+    type: "sequence_classification"
+    max_length: 128
+  distilbert:
+    name: "distilbert-base-uncased"
+    type: "sequence_classification"
+    max_length: 128
+  tinybert:
+    name: "huawei-noah/TinyBERT_General_4L_312D"
+    type: "sequence_classification"
+    max_length: 128
+  albert-base:
+    name: "albert-base-v2"
+    type: "sequence_classification"
+    max_length: 128
+
+training:
+  batch_size: 16
+  gradient_accumulation_steps: 4
+  num_epochs: 10
+  learning_rate: 2e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  save_every: 1
+  eval_every: 100
+  num_workers: 4
+  mixed_precision: "fp16"
+  seed: 42
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.1
+  target_modules:
+    - "query_key_value"
+    - "dense"
+    - "dense_h_to_4h"
+    - "dense_4h_to_h"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+data:
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  max_samples: 100000
+  synthetic_data_ratio: 0.3
+
+logging:
+  use_wandb: true
+  project_name: "automotive-slm"
+  log_level: "INFO"
+  log_every: 10
+  save_dir: "logs"
+  tensorboard: true

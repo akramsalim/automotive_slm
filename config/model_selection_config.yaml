@@ -1,0 +1,27 @@
+evaluation:
+  num_samples: 10000
+  batch_size: 32
+  metrics:
+    - accuracy
+    - latency
+    - memory_usage
+    - safety_score
+    - automotive_specific_score
+  thresholds:
+    accuracy: 0.95
+    latency: 100  # ms
+    memory_usage: 512  # MB
+    safety_score: 0.99
+
+selection_weights:
+  accuracy: 0.3
+  safety: 0.3
+  automotive: 0.2
+  latency: 0.1
+  memory: 0.1
+
+visualization:
+  figsize: [12, 6]
+  style: "seaborn"
+  save_format: "png"
+  dpi: 300
