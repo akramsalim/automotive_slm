@@ -1,20 +1,25 @@
 # training/integrated_pipeline.py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, get_scheduler, AutoModelForCausalLM
-from data.automotive_dataset import AutomotiveDataset
-from data.command_generator import AutomotiveCommandGenerator
-from evaluation.metrics import AutomotiveEvaluator, EvaluationConfig
-from losses.automotive_losses import AutomotiveLossFunction
-from peft import get_peft_model, LoraConfig, TaskType
-from safety.safety_checker import AutomotiveSafetyChecker, SafetyContext
 import wandb
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import json
 import logging
 from tqdm import tqdm
+import os
+import numpy as np
+from datetime import datetime
+
+from data.automotive_dataset import AutomotiveDataset
+from data.command_generator import AutomotiveCommandGenerator
+from evaluation.metrics import AutomotiveEvaluator, EvaluationConfig, MetricsCalculator
+from losses.automotive_losses import AutomotiveLossFunction
+from peft import get_peft_model, LoraConfig, TaskType
+from safety.safety_checker import AutomotiveSafetyChecker, SafetyContext
 
 class IntegratedAutomotiveTrainer:
     def __init__(
@@ -284,23 +289,116 @@ class IntegratedAutomotiveTrainer:
     
     def _generate_context_features(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Generate context features for the batch."""
-        # Implement context feature generation logic
-        raise NotImplementedError
+        batch_size = batch["input_ids"].shape[0]
+        context_dim = 768  # Common embedding dimension for transformer models
+        
+        # Create context features tensor with appropriate dimensions
+        context_features = torch.zeros((batch_size, context_dim), device=batch["input_ids"].device)
+        
+        # For each item in the batch, extract category information if available
+        for i in range(batch_size):
+            if "category_ids" in batch:
+                category_id = batch["category_ids"][i].item()
+                # Set specific features based on category
+                start_idx = category_id * 100  # Use different segments of the embedding space for each category
+                context_features[i, start_idx:start_idx+100] = 1.0
+                
+            # Incorporate safety-related features
+            if "safety_score" in batch:
+                safety_score = batch["safety_score"][i].item()
+                # Use the last 100 dimensions for safety information
+                context_features[i, -100:] = safety_score
+        
+        return context_features
     
     def _compute_safety_scores(self, 
-                             logits: torch.Tensor, 
-                             batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+                         logits: torch.Tensor, 
+                         batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute safety scores for predictions."""
+        batch_size = logits.shape[0]
         predictions = torch.argmax(logits, dim=-1)
-        safety_context = SafetyContext()  # Initialize with appropriate values
         
-        safety_scores = []
-        for pred in predictions:
-            command = self.tokenizer.decode(pred)
-            is_safe, _ = self.safety_checker.check_command_safety(command, safety_context)
-            safety_scores.append(float(is_safe))
+        # Create safety context with appropriate initial values
+        safety_context = self._create_safety_context()
+        
+        # Update context with batch-specific information if available
+        if "vehicle_speed" in batch:
+            safety_context.speed = batch["vehicle_speed"].mean().item()
+        
+        if "time_of_day" in batch:
+            # Map time of day index to string value
+            time_mapping = {0: "day", 1: "night"}
+            time_idx = batch["time_of_day"].mean().round().int().item()
+            safety_context.time_of_day = time_mapping.get(time_idx, "day")
+        
+        if "weather_condition" in batch:
+            # Map weather index to string value
+            weather_mapping = {0: "clear", 1: "rain", 2: "snow", 3: "fog"}
+            weather_idx = batch["weather_condition"].mean().round().int().item()
+            safety_context.weather = weather_mapping.get(weather_idx, "clear")
+        
+        # Compute safety scores for each prediction
+        safety_scores = torch.zeros(batch_size, device=logits.device)
+        
+        for i in range(batch_size):
+            # Convert prediction to command string
+            if hasattr(self.tokenizer, "decode"):
+                # If we have a tokenizer, use it
+                command = self.tokenizer.decode(predictions[i])
+            else:
+                # Otherwise use our helper method
+                command = self._convert_prediction_to_command(predictions[i])
             
-        return torch.tensor(safety_scores, device=logits.device)
+            # Check command safety
+            is_safe, violation = self.safety_checker.check_command_safety(command, safety_context)
+            
+            # Assign safety score based on check result
+            safety_scores[i] = 1.0 if is_safe else 0.0
+            
+            # If there's a violation but it's recoverable, assign partial score
+            if not is_safe and violation and hasattr(violation, 'severity'):
+                if violation.severity == "warning":
+                    safety_scores[i] = 0.5  # Partial score for recoverable issues
+        
+        return safety_scores
+
+    def _create_safety_context(self) -> SafetyContext:
+        """Create a safety context with appropriate initial values."""
+        context = SafetyContext()
+        
+        # Set default values
+        context.speed = 0.0  # Vehicle at rest initially
+        context.location = {"latitude": 37.7749, "longitude": -122.4194}  # Example location
+        context.weather = "clear"  # Default to clear weather
+        context.time_of_day = "day"  # Default to daytime
+        context.road_type = "normal"  # Default road type
+        
+        # Set vehicle state
+        context.vehicle_state = {
+            "engine": "on",
+            "doors": "closed",
+            "safety_systems": "active"
+        }
+        
+        return context
+    
+    def _convert_prediction_to_command(self, prediction: torch.Tensor) -> str:
+        """Convert model prediction to command string."""
+        # Get the class index from the prediction
+        if isinstance(prediction, torch.Tensor):
+            prediction = prediction.item()
+        
+        # Map prediction index to command type
+        command_types = ["set_temperature", "navigate_to", "activate_cruise_control", 
+                         "play_media", "adjust_volume", "set_drive_mode"]
+        
+        command_idx = prediction % len(command_types)
+        command_type = command_types[command_idx]
+        
+        # Create a simple command string
+        command = f"{command_type} with parameter=value"
+        
+        return command
     
     def _aggregate_metrics(self, metrics_list: List[Dict]) -> Dict[str, float]:
         """Aggregate metrics from multiple validation steps."""
@@ -351,8 +449,8 @@ class IntegratedAutomotiveTrainer:
         
         self.logger.info(f"Saved checkpoint: {name}")
 
-# Example configuration
-training_config = {
+# Example configuration structure for reference
+default_training_config = {
     "model_name": "microsoft/phi-2",
     "lora": {
         "rank": 8,
@@ -368,7 +466,8 @@ training_config = {
         "num_epochs": 10,
         "warmup_steps": 100,
         "max_grad_norm": 1.0,
-        "save_every": 1
+        "save_every": 1,
+        "checkpoint_dir": "checkpoints/"
     },
     "loss": {
         "safety_weight": 1.0,

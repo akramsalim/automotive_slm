@@ -36,8 +36,20 @@ def load_configs():
     
     with open("config/command_hierarchy.json") as f:
         command_hierarchy = json.load(f)
-        
+    
+    # Ensure required structure exists
+    if "model" not in training_config:
+        training_config["model"] = {}
+    
+    if "base_model_name" not in training_config["model"]:
+        # Set a default model name based on available models
+        if "phi-2" in training_config.get("model", {}):
+            training_config["model"]["base_model_name"] = "microsoft/phi-2"
+        else:
+            training_config["model"]["base_model_name"] = "distilbert-base-uncased"
+    
     return training_config, command_hierarchy
+
 
 def generate_datasets(config, command_hierarchy):
     """Generate training and validation datasets."""

@@ -81,6 +81,7 @@
       "max_volume": 85, 
       "volume_rate_limit": 5,  
       "source_change_delay": 1.0  
+    }
   },
   "system_settings": {
     "commands": [
@@ -101,5 +102,4 @@
       "update_conditions": ["parked", "engine_off"]
     }
   }
-}
 }
