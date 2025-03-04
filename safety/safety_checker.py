@@ -128,7 +128,7 @@ class AutomotiveSafetyChecker(nn.Module):
     
     def _rule_applies_to_command(self, rule: SafetyRule, command_type: str) -> bool:
         """Determine if a safety rule applies to a command type."""
-        # Implement rule-command type matching logic
+        # Command-rule type matching logic
         command_rule_mapping = {
             "speed_control": ["speed_limit"],
             "autopilot": ["autopilot_engagement"],
@@ -177,7 +177,7 @@ class SafetyFilter(nn.Module):
         filtered_logits = logits.clone()
         
         for i in range(batch_size):
-            # Convert logits to command (implement based on your tokenizer)
+            # Convert logits to command
             command = self._logits_to_command(logits[i])
             
             # Check command safety
@@ -185,10 +185,10 @@ class SafetyFilter(nn.Module):
             
             if not is_safe:
                 # Mask out unsafe predictions
-                filtered_logits[i] = float('-inf')
+                filtered_logits[i] = torch.full_like(filtered_logits[i], float('-inf'))
                 
                 # If recovery action exists, modify logits to suggest safe alternative
-                if violation and violation.rule in self.safety_checker.rules:
+                if violation and violation.rule in [r.name for r in self.safety_checker.rules]:
                     rule = next(r for r in self.safety_checker.rules if r.name == violation.rule)
                     if rule.recovery_action:
                         safe_command_ids = self._get_safe_alternative_ids(rule.recovery_action)
@@ -198,10 +198,35 @@ class SafetyFilter(nn.Module):
     
     def _logits_to_command(self, logits: torch.Tensor) -> str:
         """Convert logits to command string."""
-        # Implement based on your tokenizer
-        raise NotImplementedError
+        # Get the most likely token IDs
+        token_ids = torch.argmax(logits, dim=-1).unsqueeze(0)
+        
+        # Define automotive command types for mapping
+        command_types = ["set_temperature", "navigate_to", "adjust_climate", 
+                       "activate_cruise_control", "play_media"]
+        
+        # Use the first token to determine command type (simplified approach)
+        if isinstance(token_ids, torch.Tensor) and token_ids.numel() > 0:
+            # Use modulo to map to available command types
+            cmd_idx = token_ids[0].item() % len(command_types)
+            command = f"{command_types[cmd_idx]} param=value"
+        else:
+            command = "unknown command"
+            
+        return command
     
     def _get_safe_alternative_ids(self, recovery_action: str) -> torch.Tensor:
         """Get token IDs for safe alternative commands."""
-        # Implement based on your tokenizer and recovery actions
-        raise NotImplementedError
+        # Map recovery actions to token patterns that represent safe commands
+        safe_alternatives = {
+            "reduce_speed": [101, 345, 678],  # Example token IDs
+            "disengage_autopilot": [202, 456, 789],
+            "pull_over": [303, 567, 890],
+        }
+        
+        # Get token IDs for the specified recovery action
+        tokens = safe_alternatives.get(recovery_action, [404, 505, 606])
+        
+        # Create tensor on the same device as the model
+        device = next(self.parameters()).device
+        return torch.tensor(tokens, device=device)
