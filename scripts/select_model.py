@@ -13,7 +13,6 @@ from datetime import datetime
 from comparison.model_evaluator import AutomotiveModelEvaluator
 from data.command_generator import AutomotiveCommandGenerator
 from safety.safety_checker import AutomotiveSafetyChecker
-#from models.automotive_adapter import AutomotiveSafetyChecker
 from data.automotive_dataset import AutomotiveDataset
 
 class ModelSelector:
@@ -33,6 +32,10 @@ class ModelSelector:
         """Setup logging configuration."""
         logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
+        
+        # Clear existing handlers to avoid duplicates
+        if logger.handlers:
+            logger.handlers.clear()
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = Path("logs")
@@ -56,20 +59,69 @@ class ModelSelector:
         """Prepare dataset for model evaluation."""
         self.logger.info("Generating evaluation dataset...")
         
+        # Get the number of samples from config or use default
+        num_samples = self.config["evaluation"].get("num_samples", 1000)
+        
+        # Get distribution or use default even distribution
+        distribution = self.config.get("data", {}).get("command_distribution", {})
+        if not distribution:
+            # Create even distribution across all command types
+            command_types = ["climate", "navigation", "vehicle_control", "media", "system"]
+            distribution = {cmd_type: 1.0/len(command_types) for cmd_type in command_types}
+            
+        self.logger.info(f"Generating {num_samples} samples with distribution: {distribution}")
+        
+        # Generate data
         eval_data = self.command_generator.generate_synthetic_dataset(
-            num_samples=self.config["evaluation"]["num_samples"],
-            distribution=self.config["data"]["command_distribution"]
+            num_samples=num_samples,
+            output_path="./eval_data",
+            distribution=distribution
         )
         
-        return AutomotiveDataset(eval_data, self.config["data"]["command_hierarchy"])
+        # Load command hierarchy from config
+        command_hierarchy_path = Path(self.config.get("data", {}).get("hierarchy_path", "config/command_hierarchy.json"))
+        try:
+            with open(command_hierarchy_path) as f:
+                command_hierarchy = json.load(f)
+        except Exception as e:
+            self.logger.warning(f"Failed to load command hierarchy: {e}")
+            command_hierarchy = {}
+        
+        self.logger.info("Dataset generation complete")
+        return AutomotiveDataset(eval_data, self.tokenizer, command_labels=list(command_hierarchy.keys()))
+    
+    def _get_tokenizer(self):
+        """Get tokenizer for the dataset."""
+        from transformers import AutoTokenizer
+        
+        # Use a base model tokenizer - could be improved to use the actual model's tokenizer
+        tokenizer_name = "distilbert-base-uncased"
+        return AutoTokenizer.from_pretrained(tokenizer_name)
     
     def evaluate_models(self) -> Dict:
         """Evaluate all models and collect performance metrics."""
         self.logger.info("Starting model evaluation...")
         
-        eval_dataset = self.prepare_evaluation_data()
-        results = self.evaluator.compare_models(eval_dataset, self.safety_checker)
+        # Initialize tokenizer
+        self.tokenizer = self._get_tokenizer()
         
+        # Prepare evaluation dataset
+        try:
+            eval_dataset = self.prepare_evaluation_data()
+            self.logger.info(f"Prepared evaluation dataset with {len(eval_dataset)} samples")
+        except Exception as e:
+            self.logger.error(f"Error preparing evaluation dataset: {e}")
+            raise
+        
+        # Run evaluation
+        try:
+            results = self.evaluator.compare_models(eval_dataset, self.safety_checker)
+            self.logger.info(f"Evaluation complete for {len(results)} models")
+        except Exception as e:
+            self.logger.error(f"Error during model evaluation: {e}")
+            raise
+        
+        # Save and visualize results
         self._save_results(results)
         return results
     
@@ -82,7 +134,12 @@ class ModelSelector:
         
         # Save raw results
         with open(output_dir / f"model_comparison_{timestamp}.json", "w") as f:
-            json.dump(results, f, indent=2)
+            # Convert model performance objects to dictionaries
+            serializable_results = {}
+            for model, perf in results.items():
+                serializable_results[model] = vars(perf)
+            
+            json.dump(serializable_results, f, indent=2)
         
         # Generate and save visualizations
         self._generate_visualizations(results, output_dir, timestamp)
@@ -129,7 +186,7 @@ class ModelSelector:
         plt.close()
     
     def _plot_resource_usage(self, df: pd.DataFrame, 
-                            output_dir: Path, timestamp: str):
+                           output_dir: Path, timestamp: str):
         """Plot resource usage comparison."""
         plt.figure(figsize=(12, 6))
         metrics = ["latency", "memory_usage"]
@@ -154,6 +211,7 @@ class ModelSelector:
         """Plot automotive-specific metrics."""
         plt.figure(figsize=(10, 6))
         
+        # Create scatter plot
         sns.scatterplot(
             data=df,
             x="throughput",
@@ -173,20 +231,30 @@ class ModelSelector:
     
     def select_best_model(self, results: Dict) -> str:
         """Select the best model based on weighted metrics."""
-        weights = self.config["selection_weights"]
+        # Get selection weights from config or use defaults
+        weights = self.config.get("selection_weights", {
+            "accuracy": 0.3,
+            "safety": 0.3,
+            "automotive": 0.2,
+            "latency": 0.1,
+            "memory": 0.1
+        })
+        
         scores = {}
         
         for model_name, performance in results.items():
             # Calculate weighted score
+            perf_attrs = vars(performance)
             score = (
-                weights["accuracy"] * performance.accuracy +
-                weights["safety"] * performance.safety_score +
-                weights["automotive"] * performance.automotive_specific_score -
-                weights["latency"] * (performance.latency / 100) -  # Normalize latency
-                weights["memory"] * (performance.memory_usage / 1000)  # Normalize memory
+                weights["accuracy"] * perf_attrs["accuracy"] +
+                weights["safety"] * perf_attrs["safety_score"] +
+                weights["automotive"] * perf_attrs["automotive_specific_score"] -
+                weights["latency"] * (perf_attrs["latency"] / 100) -  # Normalize latency
+                weights["memory"] * (perf_attrs["memory_usage"] / 1000)  # Normalize memory
             )
             scores[model_name] = score
         
+        # Find model with highest score
         best_model = max(scores.items(), key=lambda x: x[1])[0]
         
         self.logger.info(f"Selected best model: {best_model}")
@@ -195,11 +263,19 @@ class ModelSelector:
         return best_model
 
 def main():
-    # Parse command line arguments if needed
-    config_path = "config/model_selection_config.yaml"
+    # Parse command line arguments using argparse
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Select the best model for automotive applications")
+    parser.add_argument("--config", type=str, default="config/model_selection_config.yaml",
+                      help="Path to configuration file")
+    parser.add_argument("--output-dir", type=str, default="results",
+                      help="Directory to save results")
+    
+    args = parser.parse_args()
     
     # Initialize selector
-    selector = ModelSelector(config_path)
+    selector = ModelSelector(args.config)
     
     try:
         # Run evaluation
@@ -209,12 +285,22 @@ def main():
         best_model = selector.select_best_model(results)
         
         # Save selection results
-        output_dir = Path("results")
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(exist_ok=True)
+        
         with open(output_dir / "model_selection_result.json", "w") as f:
+            # Convert to serializable format
+            serializable_results = {}
+            for model, perf in results.items():
+                serializable_results[model] = vars(perf)
+                
             json.dump({
                 "best_model": best_model,
-                "results": results
+                "results": serializable_results
             }, f, indent=2)
+            
+        print(f"Best model selected: {best_model}")
+        print(f"Results saved to {output_dir / 'model_selection_result.json'}")
             
     except Exception as e:
         selector.logger.error(f"Model selection failed: {str(e)}", exc_info=True)

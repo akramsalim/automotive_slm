@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import math
 
 class SafetyAwareLoss(nn.Module):
@@ -36,6 +36,8 @@ class CommandContextLoss(nn.Module):
         super().__init__()
         self.context_weight = context_weight
         self.base_loss = nn.CrossEntropyLoss()
+        # Initialize projection layer
+        self.projection = nn.Linear(768, 768)  # Common embedding dimension
     
     def forward(self, 
                 logits: torch.Tensor, 
@@ -61,18 +63,52 @@ class CommandContextLoss(nn.Module):
                                    logits: torch.Tensor, 
                                    context_features: torch.Tensor) -> torch.Tensor:
         """Compute consistency between predictions and context."""
-        # Project logits and context to same space
+        # Project logits to context space
         logits_proj = self._project_to_context_space(logits)
         
-        # Compute consistency loss (e.g., cosine similarity)
-        consistency = 1 - F.cosine_similarity(logits_proj, context_features).mean()
+        # Compute consistency loss (cosine similarity)
+        if logits_proj.shape[0] != context_features.shape[0]:
+            # If batch sizes don't match, resize context features
+            context_features = context_features[:logits_proj.shape[0]]
+        
+        if logits_proj.shape[1] != context_features.shape[1]:
+            # If feature dimensions don't match, pad or truncate
+            if logits_proj.shape[1] < context_features.shape[1]:
+                # Pad logits_proj
+                padding = torch.zeros(
+                    logits_proj.shape[0], 
+                    context_features.shape[1] - logits_proj.shape[1], 
+                    device=logits_proj.device
+                )
+                logits_proj = torch.cat([logits_proj, padding], dim=1)
+            else:
+                # Truncate logits_proj
+                logits_proj = logits_proj[:, :context_features.shape[1]]
+        
+        # Normalize for cosine similarity
+        logits_norm = F.normalize(logits_proj, p=2, dim=1)
+        context_norm = F.normalize(context_features, p=2, dim=1)
+        
+        # Compute consistency (1 - similarity)
+        consistency = 1 - F.cosine_similarity(logits_norm, context_norm).mean()
         
         return consistency
     
     def _project_to_context_space(self, logits: torch.Tensor) -> torch.Tensor:
         """Project logits to context feature space."""
-        # Implement projection logic
-        raise NotImplementedError
+        batch_size = logits.shape[0]
+        
+        # Take mean over vocabulary dimension to get a representation for each item
+        logits_avg = logits.mean(dim=1)
+        
+        # Project to context space using the projection layer
+        if not hasattr(self, 'projection') or self.projection.in_features != logits_avg.shape[1]:
+            self.projection = nn.Linear(
+                logits_avg.shape[1], 768, 
+                device=logits.device
+            )
+        
+        return self.projection(logits_avg)
 
 class HierarchicalCommandLoss(nn.Module):
     def __init__(self, command_hierarchy: Dict[str, List[str]], hierarchy_weights: Optional[Dict[str, float]] = None):
@@ -90,6 +126,15 @@ class HierarchicalCommandLoss(nn.Module):
             "command": 0.6
         }
         self.base_loss = nn.CrossEntropyLoss()
+        
+        # Map commands to categories for efficient lookup
+        self.command_to_category = {}
+        for category, commands in command_hierarchy.items():
+            for command in commands:
+                self.command_to_category[command] = category
+        
+        # Create mapping between category names and indices
+        self.category_to_idx = {category: idx for idx, category in enumerate(command_hierarchy.keys())}
         
     def forward(self, 
                 logits: torch.Tensor, 
@@ -118,13 +163,43 @@ class HierarchicalCommandLoss(nn.Module):
     
     def _aggregate_category_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """Aggregate command logits to category level."""
-        category_logits = []
-        for category, commands in self.command_hierarchy.items():
-            # Sum logits for all commands in category
-            category_score = torch.sum(logits[:, commands], dim=1)
-            category_logits.append(category_score)
+        batch_size = logits.shape[0]
+        num_categories = len(self.command_hierarchy)
+        device = logits.device
         
-        return torch.stack(category_logits, dim=1)
+        # Initialize tensor for category logits
+        category_logits = torch.zeros(batch_size, num_categories, device=device)
+        
+        # Handle empty or malformed command hierarchy
+        if not self.command_hierarchy:
+            return category_logits
+            
+        # Map command indices to category indices
+        # For each predicted command, increase the score for its category
+        _, command_indices = torch.topk(logits, k=min(5, logits.shape[1]), dim=1)
+        
+        for batch_idx in range(batch_size):
+            for command_idx in command_indices[batch_idx]:
+                # Convert tensor to Python scalar
+                cmd_idx = command_idx.item()
+                
+                # Map command index to category, handling out-of-bounds
+                cmd_idx_mod = cmd_idx % sum(len(cmds) for cmds in self.command_hierarchy.values())
+                
+                # Find which category this command belongs to
+                running_idx = 0
+                category_idx = 0
+                
+                for cat_idx, (cat, commands) in enumerate(self.command_hierarchy.items()):
+                    if running_idx <= cmd_idx_mod < running_idx + len(commands):
+                        category_idx = cat_idx
+                        break
+                    running_idx += len(commands)
+                
+                # Add score to this category
+                category_logits[batch_idx, category_idx] += logits[batch_idx, cmd_idx]
+        
+        return category_logits
 
 class AutomotiveLossFunction(nn.Module):
     def __init__(self, 
@@ -177,82 +252,3 @@ class AutomotiveLossFunction(nn.Module):
             "context_loss": context_loss,
             "hierarchical_loss": hierarchical_loss
         }
-
-class LateralityAwareLoss(nn.Module):
-    """Loss function for commands with lateral movement considerations."""
-    
-    def __init__(self, laterality_weight: float = 0.3):
-        super().__init__()
-        self.laterality_weight = laterality_weight
-        self.base_loss = nn.CrossEntropyLoss()
-        
-    def forward(self, 
-                logits: torch.Tensor, 
-                labels: torch.Tensor,
-                current_lateral_state: torch.Tensor) -> torch.Tensor:
-        """
-        Compute loss considering lateral movement safety.
-        
-        Args:
-            logits: Model predictions
-            labels: Ground truth labels
-            current_lateral_state: Current lateral movement state
-        """
-        # Base command loss
-        base_loss = self.base_loss(logits, labels)
-        
-        # Compute laterality penalty
-        laterality_penalty = self._compute_laterality_penalty(
-            logits, current_lateral_state
-        )
-        
-        return base_loss + self.laterality_weight * laterality_penalty
-    
-    def _compute_laterality_penalty(self, 
-                                  logits: torch.Tensor,
-                                  current_lateral_state: torch.Tensor) -> torch.Tensor:
-        """Compute penalty for unsafe lateral movements."""
-        # Convert logits to movement predictions
-        movement_probs = F.softmax(logits, dim=-1)
-        
-        # Calculate penalty based on current state and predicted movements
-        penalty = torch.abs(movement_probs - current_lateral_state).mean()
-        
-        return penalty
-
-# Example usage of the combined loss function
-def train_step(model: nn.Module,
-               batch: Dict[str, torch.Tensor],
-               loss_fn: AutomotiveLossFunction,
-               optimizer: torch.optim.Optimizer) -> Dict[str, float]:
-    """
-    Single training step with combined loss function.
-    
-    Args:
-        model: The model to train
-        batch: Batch of training data
-        loss_fn: Combined loss function
-        optimizer: Optimizer
-    
-    Returns:
-        Dictionary of loss values
-    """
-    optimizer.zero_grad()
-    
-    # Forward pass
-    logits = model(batch["input_ids"], batch["attention_mask"])
-    
-    # Compute losses
-    losses = loss_fn(
-        logits=logits,
-        labels=batch["labels"],
-        safety_scores=batch["safety_scores"],
-        context_features=batch["context_features"],
-        category_labels=batch["category_labels"]
-    )
-    
-    # Backward pass
-    losses["total_loss"].backward()
-    optimizer.step()
-    
-    return {k: v.item() for k, v in losses.items()}

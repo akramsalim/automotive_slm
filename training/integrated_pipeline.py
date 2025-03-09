@@ -16,7 +16,7 @@ from datetime import datetime
 
 from data.automotive_dataset import AutomotiveDataset
 from data.command_generator import AutomotiveCommandGenerator
-from evaluation.metrics import AutomotiveEvaluator, EvaluationConfig, MetricsCalculator
+from evaluation.metrics import AutomotiveEvaluator, EvaluationConfig
 from losses.automotive_losses import AutomotiveLossFunction
 from peft import get_peft_model, LoraConfig, TaskType
 from safety.safety_checker import AutomotiveSafetyChecker, SafetyContext
@@ -57,24 +57,24 @@ class IntegratedAutomotiveTrainer:
         # Base model initialization
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=torch.float16,
-            device_map="auto"
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None
         )
         
         # LoRA configuration
         lora_config = LoraConfig(
-            r=self.config["lora"]["rank"],
+            r=self.config["lora"]["r"],  # Use r instead of rank
             lora_alpha=self.config["lora"]["alpha"],
             target_modules=self.config["lora"]["target_modules"],
             lora_dropout=self.config["lora"]["dropout"],
-            bias="none",
+            bias=self.config["lora"]["bias"],
             task_type=TaskType.CAUSAL_LM
         )
         
         # Apply LoRA
         self.model = get_peft_model(self.model, lora_config)
         
-        # Add safety checker
+        # Define model as a module dictionary for organization
         self.model = nn.ModuleDict({
             'base_model': self.model,
             'safety_checker': self.safety_checker
@@ -83,12 +83,20 @@ class IntegratedAutomotiveTrainer:
     def _init_tokenizer(self):
         """Initialize tokenizer with automotive-specific tokens."""
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        
+        # Add special tokens for automotive domain
         new_tokens = [
             "<VEHICLE>", "<COMMAND>", "<SAFETY>", "<ERROR>",
             "<NAVIGATION>", "<CLIMATE>", "<MEDIA>"
         ]
-        self.tokenizer.add_tokens(new_tokens)
+        
+        # Check if tokenizer has pad token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+        num_added = self.tokenizer.add_tokens(new_tokens)
         self.model.base_model.resize_token_embeddings(len(self.tokenizer))
+        self.logger.info(f"Added {num_added} new tokens to the tokenizer")
         
     def _init_dataloaders(self):
         """Initialize training and validation dataloaders."""
@@ -96,14 +104,14 @@ class IntegratedAutomotiveTrainer:
             self.train_dataset,
             batch_size=self.config["training"]["batch_size"],
             shuffle=True,
-            num_workers=self.config["training"]["num_workers"]
+            num_workers=self.config["training"].get("num_workers", 4)
         )
         
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size=self.config["training"]["batch_size"],
             shuffle=False,
-            num_workers=self.config["training"]["num_workers"]
+            num_workers=self.config["training"].get("num_workers", 4)
         )
         
     def _init_loss_functions(self):
@@ -117,8 +125,8 @@ class IntegratedAutomotiveTrainer:
         
     def _init_optimizer(self):
         """Initialize optimizer and learning rate scheduler."""
-        # Only optimize LoRA parameters
-        trainable_params = self.model.base_model.parameters()
+        # Only optimize LoRA parameters for efficiency
+        trainable_params = [p for p in self.model.base_model.parameters() if p.requires_grad]
         
         self.optimizer = torch.optim.AdamW(
             trainable_params,
@@ -127,12 +135,14 @@ class IntegratedAutomotiveTrainer:
         )
         
         # Learning rate scheduler
-        num_training_steps = len(self.train_loader) * self.config["training"]["num_epochs"]
+        total_steps = len(self.train_loader) * self.config["training"]["num_epochs"]
+        warmup_steps = int(total_steps * self.config["training"].get("warmup_ratio", 0.1))
+        
         self.lr_scheduler = get_scheduler(
             "cosine",
             optimizer=self.optimizer,
-            num_warmup_steps=self.config["training"]["warmup_steps"],
-            num_training_steps=num_training_steps
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps
         )
         
     def _init_evaluator(self):
@@ -149,7 +159,27 @@ class IntegratedAutomotiveTrainer:
         logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
         
-        if self.config["logging"]["use_wandb"]:
+        if not logger.handlers:
+            # Add console handler
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            ))
+            logger.addHandler(console_handler)
+            
+            # Add file handler
+            log_dir = Path(self.config["logging"].get("save_dir", "logs"))
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(
+                log_dir / f"training_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            )
+            file_handler.setFormatter(logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            ))
+            logger.addHandler(file_handler)
+        
+        # Initialize wandb if enabled
+        if self.config["logging"].get("use_wandb", False):
             wandb.init(
                 project=self.config["logging"]["project_name"],
                 config=self.config
@@ -159,9 +189,22 @@ class IntegratedAutomotiveTrainer:
         
     def _load_command_hierarchy(self) -> Dict[str, List[str]]:
         """Load command hierarchy from config."""
-        hierarchy_path = Path(self.config["data"]["hierarchy_path"])
-        with open(hierarchy_path) as f:
-            return json.load(f)
+        if "data" in self.config and "hierarchy_path" in self.config["data"]:
+            hierarchy_path = Path(self.config["data"]["hierarchy_path"])
+            try:
+                with open(hierarchy_path) as f:
+                    return json.load(f)
+            except Exception as e:
+                self.logger.warning(f"Failed to load command hierarchy: {e}")
+                
+        # Fallback to default hierarchy
+        return {
+            "climate_control": ["set_temperature", "adjust_fan", "toggle_ac"],
+            "navigation": ["set_destination", "find_route", "show_traffic"],
+            "vehicle_control": ["cruise_control", "drive_mode", "parking_assist"],
+            "media_control": ["play_media", "adjust_volume", "change_source"],
+            "system_control": ["adjust_display", "update_settings", "pair_device"]
+        }
             
     def train(self):
         """Main training loop."""
@@ -202,7 +245,12 @@ class IntegratedAutomotiveTrainer:
         progress_bar = tqdm(self.train_loader, desc=f"Training epoch {self.current_epoch + 1}")
         
         for batch in progress_bar:
-            # Generate synthetic context
+            # Move batch to device
+            device = next(self.model.parameters()).device
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                   for k, v in batch.items()}
+            
+            # Generate synthetic context features
             context_features = self._generate_context_features(batch)
             
             # Forward pass
@@ -210,6 +258,10 @@ class IntegratedAutomotiveTrainer:
             
             # Safety check
             safety_scores = self._compute_safety_scores(outputs.logits, batch)
+            
+            # Create category labels if not in batch
+            if "category_labels" not in batch:
+                batch["category_labels"] = self._derive_category_labels(batch)
             
             # Compute loss
             losses = self.loss_fn(
@@ -258,16 +310,30 @@ class IntegratedAutomotiveTrainer:
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validating"):
-                # Similar to training forward pass
+                # Move batch to device
+                device = next(self.model.parameters()).device
+                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                       for k, v in batch.items()}
+                
+                # Generate context features
                 context_features = self._generate_context_features(batch)
+                
+                # Forward pass
                 outputs = self.model.base_model(**batch)
+                
+                # Safety check
                 safety_scores = self._compute_safety_scores(outputs.logits, batch)
                 
+                # Create category labels if not in batch
+                if "category_labels" not in batch:
+                    batch["category_labels"] = self._derive_category_labels(batch)
+                
                 # Compute metrics
+                batch_context = self._create_safety_context()
                 metrics = self.evaluator.evaluate_model(
-                    self.model,
+                    self.model.base_model,
                     batch,
-                    lambda: self._generate_context_features(batch)
+                    lambda: batch_context
                 )
                 all_metrics.append(metrics)
                 
@@ -290,35 +356,52 @@ class IntegratedAutomotiveTrainer:
     def _generate_context_features(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Generate context features for the batch."""
         batch_size = batch["input_ids"].shape[0]
+        device = batch["input_ids"].device
         context_dim = 768  # Common embedding dimension for transformer models
         
         # Create context features tensor with appropriate dimensions
-        context_features = torch.zeros((batch_size, context_dim), device=batch["input_ids"].device)
+        context_features = torch.zeros((batch_size, context_dim), device=device)
         
-        # For each item in the batch, extract category information if available
+        # For each item in the batch, extract context information
         for i in range(batch_size):
             if "category_ids" in batch:
                 category_id = batch["category_ids"][i].item()
                 # Set specific features based on category
-                start_idx = category_id * 100  # Use different segments of the embedding space for each category
-                context_features[i, start_idx:start_idx+100] = 1.0
-                
-            # Incorporate safety-related features
+                start_idx = category_id * 100  # Use different segments for each category
+                end_idx = min(start_idx + 100, context_dim)
+                context_features[i, start_idx:end_idx] = 1.0
+            
+            # Incorporate safety-related features if available
             if "safety_score" in batch:
                 safety_score = batch["safety_score"][i].item()
-                # Use the last 100 dimensions for safety information
-                context_features[i, -100:] = safety_score
+                # Use last segment for safety information
+                start_idx = max(0, context_dim - 100)
+                context_features[i, start_idx:] = safety_score
+            
+            # Additional context information (vehicle state, etc.)
+            # Could be incorporated here from batch data
         
         return context_features
+    
+    def _derive_category_labels(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Derive category labels from command labels if not provided."""
+        if "labels" not in batch:
+            return torch.zeros(batch["input_ids"].shape[0], dtype=torch.long, device=batch["input_ids"].device)
+            
+        # Map from command ID to category ID based on hierarchy
+        # For simplicity, we'll use label // 5 as the category (5 commands per category)
+        category_labels = batch["labels"] // 5
+        return category_labels
     
     def _compute_safety_scores(self, 
                          logits: torch.Tensor, 
                          batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute safety scores for predictions."""
         batch_size = logits.shape[0]
+        device = logits.device
         predictions = torch.argmax(logits, dim=-1)
         
-        # Create safety context with appropriate initial values
+        # Create safety context
         safety_context = self._create_safety_context()
         
         # Update context with batch-specific information if available
@@ -338,24 +421,19 @@ class IntegratedAutomotiveTrainer:
             safety_context.weather = weather_mapping.get(weather_idx, "clear")
         
         # Compute safety scores for each prediction
-        safety_scores = torch.zeros(batch_size, device=logits.device)
+        safety_scores = torch.ones(batch_size, device=device)
         
         for i in range(batch_size):
             # Convert prediction to command string
-            if hasattr(self.tokenizer, "decode"):
-                # If we have a tokenizer, use it
-                command = self.tokenizer.decode(predictions[i])
-            else:
-                # Otherwise use our helper method
-                command = self._convert_prediction_to_command(predictions[i])
+            command = self._convert_prediction_to_command(predictions[i])
             
             # Check command safety
             is_safe, violation = self.safety_checker.check_command_safety(command, safety_context)
             
-            # Assign safety score based on check result
+            # Assign safety score
             safety_scores[i] = 1.0 if is_safe else 0.0
             
-            # If there's a violation but it's recoverable, assign partial score
+            # If there's a recoverable violation, assign partial score
             if not is_safe and violation and hasattr(violation, 'severity'):
                 if violation.severity == "warning":
                     safety_scores[i] = 0.5  # Partial score for recoverable issues
@@ -363,15 +441,15 @@ class IntegratedAutomotiveTrainer:
         return safety_scores
 
     def _create_safety_context(self) -> SafetyContext:
-        """Create a safety context with appropriate initial values."""
+        """Create a safety context with appropriate values."""
         context = SafetyContext()
         
         # Set default values
-        context.speed = 0.0  # Vehicle at rest initially
+        context.speed = 50.0  # 50 km/h
         context.location = {"latitude": 37.7749, "longitude": -122.4194}  # Example location
-        context.weather = "clear"  # Default to clear weather
-        context.time_of_day = "day"  # Default to daytime
-        context.road_type = "normal"  # Default road type
+        context.weather = "clear"
+        context.time_of_day = "day"
+        context.road_type = "normal"
         
         # Set vehicle state
         context.vehicle_state = {
@@ -388,45 +466,71 @@ class IntegratedAutomotiveTrainer:
         if isinstance(prediction, torch.Tensor):
             prediction = prediction.item()
         
+        # Command templates for conversion
+        command_types = [
+            "set_temperature to 22 degrees",
+            "navigate_to Central Park",
+            "activate_cruise_control at 80 km/h",
+            "play_media Jazz Playlist",
+            "adjust_volume to 60 percent",
+            "set_drive_mode to eco"
+        ]
+        
         # Map prediction index to command type
-        command_types = ["set_temperature", "navigate_to", "activate_cruise_control", 
-                         "play_media", "adjust_volume", "set_drive_mode"]
-        
         command_idx = prediction % len(command_types)
-        command_type = command_types[command_idx]
-        
-        # Create a simple command string
-        command = f"{command_type} with parameter=value"
+        command = command_types[command_idx]
         
         return command
     
     def _aggregate_metrics(self, metrics_list: List[Dict]) -> Dict[str, float]:
         """Aggregate metrics from multiple validation steps."""
+        if not metrics_list:
+            return {}
+            
         aggregated = {}
-        for key in metrics_list[0].keys():
-            if isinstance(metrics_list[0][key], (int, float)):
-                aggregated[key] = sum(m[key] for m in metrics_list) / len(metrics_list)
+        
+        # Identify all metric keys from first entry
+        for category in metrics_list[0]:
+            if isinstance(metrics_list[0][category], dict):
+                aggregated[category] = {}
+                for metric_name, value in metrics_list[0][category].items():
+                    if isinstance(value, (int, float)):
+                        # Average numeric metrics
+                        values = [m[category].get(metric_name, 0) for m in metrics_list]
+                        aggregated[category][metric_name] = sum(values) / len(values)
+        
         return aggregated
     
     def _log_metrics(self, train_metrics: Dict[str, float], val_metrics: Dict[str, float]):
         """Log metrics to console and wandb."""
-        metrics = {
-            **{f"train_{k}": v for k, v in train_metrics.items()},
-            **{f"val_{k}": v for k, v in val_metrics.items()}
-        }
+        # Flatten nested metrics for easier logging
+        flat_train_metrics = {"train_" + k: v for k, v in train_metrics.items()}
+        
+        flat_val_metrics = {}
+        for category, metrics in val_metrics.items():
+            if isinstance(metrics, dict):
+                for k, v in metrics.items():
+                    flat_val_metrics[f"val_{category}_{k}"] = v
+            else:
+                flat_val_metrics[f"val_{category}"] = metrics
+        
+        # Combine all metrics
+        all_metrics = {**flat_train_metrics, **flat_val_metrics}
         
         # Console logging
         self.logger.info(f"Epoch {self.current_epoch + 1} metrics:")
-        for name, value in metrics.items():
-            self.logger.info(f"{name}: {value:.4f}")
+        for name, value in all_metrics.items():
+            if isinstance(value, (int, float)):
+                self.logger.info(f"{name}: {value:.4f}")
             
         # WandB logging
-        if self.config["logging"]["use_wandb"]:
-            wandb.log(metrics, step=self.global_step)
+        if self.config["logging"].get("use_wandb", False):
+            wandb.log(all_metrics, step=self.global_step)
     
     def _save_checkpoint(self, name: str):
         """Save model checkpoint."""
-        checkpoint_dir = Path(self.config["training"]["checkpoint_dir"])
+        # Create checkpoint directory
+        checkpoint_dir = Path(self.config["training"].get("checkpoint_dir", "checkpoints"))
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
         # Save model
@@ -449,14 +553,15 @@ class IntegratedAutomotiveTrainer:
         
         self.logger.info(f"Saved checkpoint: {name}")
 
-# Example configuration structure for reference
+# Example default config for reference
 default_training_config = {
     "model_name": "microsoft/phi-2",
     "lora": {
-        "rank": 8,
+        "r": 8,
         "alpha": 16,
         "target_modules": ["query_key_value", "dense"],
-        "dropout": 0.1
+        "dropout": 0.1,
+        "bias": "none"
     },
     "training": {
         "batch_size": 16,
@@ -464,7 +569,7 @@ default_training_config = {
         "learning_rate": 2e-4,
         "weight_decay": 0.01,
         "num_epochs": 10,
-        "warmup_steps": 100,
+        "warmup_ratio": 0.1,
         "max_grad_norm": 1.0,
         "save_every": 1,
         "checkpoint_dir": "checkpoints/"
@@ -481,7 +586,8 @@ default_training_config = {
     },
     "logging": {
         "use_wandb": True,
-        "project_name": "automotive-slm"
+        "project_name": "automotive-slm",
+        "save_dir": "logs"
     },
     "data": {
         "hierarchy_path": "config/command_hierarchy.json"

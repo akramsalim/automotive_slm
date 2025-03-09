@@ -56,12 +56,22 @@ class SafetyLayer(nn.Module):
         return mask
 
     def _apply_rule(self,
-                    rule_name: str,
-                    rule_params: Dict,
-                    context: Optional[Dict]) -> torch.Tensor:
+                   rule_name: str,
+                   rule_params: Dict,
+                   context: Optional[Dict]) -> torch.Tensor:
         """Apply specific safety rule."""
-        # Implement rule-specific logic
-        return torch.ones_like(torch.logit, dtype=torch.bool)  # Placeholder
+        # Implement rule-specific logic based on rule name and params
+        # For placeholder, we'll return a tensor of all ones (allowing all tokens)
+        shape = torch.logit.shape if 'logits' in locals() else (1,)
+        
+        if context and 'logits_shape' in context:
+            shape = context['logits_shape']
+        
+        return torch.ones(shape, dtype=torch.bool, device=self._get_device())
+        
+    def _get_device(self):
+        """Get the current device of the model."""
+        return next(self.parameters()).device
 
 class AutomotiveAdapter(nn.Module):
     """Adapter for automotive-specific model behavior."""
@@ -121,8 +131,8 @@ class AutomotiveAdapter(nn.Module):
         return {
             "logits": safe_logits,
             "loss": outputs.loss if labels is not None else None,
-            "hidden_states": outputs.hidden_states,
-            "attentions": outputs.attentions
+            "hidden_states": outputs.hidden_states if hasattr(outputs, 'hidden_states') else None,
+            "attentions": outputs.attentions if hasattr(outputs, 'attentions') else None
         }
 
     def generate(self,
@@ -144,6 +154,7 @@ class AutomotiveAdapter(nn.Module):
         Returns:
             Generated token IDs
         """
+        # Define a scoring function that applies safety constraints
         def safety_scoring_fn(batch_ids, scores):
             """Callback for safe generation."""
             return self.safety_layer(
@@ -157,10 +168,11 @@ class AutomotiveAdapter(nn.Module):
             "max_length": max_length or self.config.get("max_length", 512),
             "num_beams": self.config.get("num_beams", 5),
             "no_repeat_ngram_size": self.config.get("no_repeat_ngram_size", 3),
-            "scoring_fn": safety_scoring_fn,
+            "logits_processor": [safety_scoring_fn],  # Use our safety processor
             **kwargs
         }
 
+        # Run generation with safety constraints
         return self.base_model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,

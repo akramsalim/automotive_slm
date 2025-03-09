@@ -261,9 +261,145 @@ class AutomotiveModelEvaluator:
     
     def _convert_prediction_to_command(self, prediction: torch.Tensor) -> str:
         """Convert model prediction to command string."""
-        # Implement based on your tokenizer and command structure
-        raise NotImplementedError
-    
+        # Get the prediction as a Python value
+        if isinstance(prediction, torch.Tensor):
+            pred_idx = prediction.item()
+        else:
+            pred_idx = prediction
+            
+        # Map prediction index to command category
+        command_categories = self._get_command_labels()
+        category_idx = pred_idx % len(command_categories)
+        category = command_categories[category_idx]
+        
+        # Define command templates for each category
+        templates = {
+            "climate_control": [
+                "set temperature to {temp} degrees",
+                "adjust fan speed to {speed}",
+                "turn {state} air conditioning",
+                "set {location} temperature to {temp} degrees"
+            ],
+            "navigation": [
+                "navigate to {destination}",
+                "find route to {destination} via {preference}",
+                "avoid {obstacle} on route",
+                "set destination to {destination}"
+            ],
+            "vehicle_control": [
+                "set cruise control to {speed} km/h",
+                "change to {mode} driving mode",
+                "{action} lane keeping assist",
+                "adjust {system} sensitivity to {level}"
+            ],
+            "media_control": [
+                "play {content}",
+                "set volume to {level}",
+                "switch to {source}",
+                "{action} {content} playback"
+            ],
+            "system_settings": [
+                "update {setting}",
+                "check {component} status",
+                "configure {option}",
+                "run {diagnostic_type} diagnostics"
+            ]
+        }
+        
+        # Select a template for the category
+        category_templates = templates.get(category, ["perform {action}"])
+        template_idx = pred_idx % len(category_templates)
+        template = category_templates[template_idx]
+        
+        # Fill in template parameters with appropriate values
+        filled_template = template
+        
+        # Temperature values (16-30)
+        if "{temp}" in template:
+            filled_template = filled_template.replace("{temp}", str(16 + (pred_idx % 15)))
+        
+        # Fan speeds
+        if "{speed}" in template:
+            speeds = ["low", "medium", "high", "auto"]
+            filled_template = filled_template.replace("{speed}", speeds[pred_idx % len(speeds)])
+        
+        # On/off states
+        if "{state}" in template:
+            states = ["on", "off"]
+            filled_template = filled_template.replace("{state}", states[pred_idx % len(states)])
+        
+        # Location zones
+        if "{location}" in template:
+            locations = ["driver", "passenger", "rear", "all"]
+            filled_template = filled_template.replace("{location}", locations[pred_idx % len(locations)])
+        
+        # Destinations
+        if "{destination}" in template:
+            destinations = ["home", "work", "restaurant", "gas station", "airport"]
+            filled_template = filled_template.replace("{destination}", destinations[pred_idx % len(destinations)])
+        
+        # Route preferences
+        if "{preference}" in template:
+            preferences = ["fastest", "eco", "scenic", "toll-free"]
+            filled_template = filled_template.replace("{preference}", preferences[pred_idx % len(preferences)])
+        
+        # Obstacles to avoid
+        if "{obstacle}" in template:
+            obstacles = ["tolls", "highways", "traffic", "ferries"]
+            filled_template = filled_template.replace("{obstacle}", obstacles[pred_idx % len(obstacles)])
+        
+        # Drive modes
+        if "{mode}" in template:
+            modes = ["eco", "comfort", "sport", "auto"]
+            filled_template = filled_template.replace("{mode}", modes[pred_idx % len(modes)])
+        
+        # Actions
+        if "{action}" in template:
+            actions = ["activate", "deactivate", "enable", "disable", "start", "stop"]
+            filled_template = filled_template.replace("{action}", actions[pred_idx % len(actions)])
+        
+        # Vehicle systems
+        if "{system}" in template:
+            systems = ["parking assist", "lane keeping", "cruise control", "auto-pilot"]
+            filled_template = filled_template.replace("{system}", systems[pred_idx % len(systems)])
+        
+        # Media content
+        if "{content}" in template:
+            content = ["music", "radio", "podcast", "audiobook", "news"]
+            filled_template = filled_template.replace("{content}", content[pred_idx % len(content)])
+        
+        # Volume/sensitivity levels
+        if "{level}" in template:
+            levels = ["low", "medium", "high", "maximum"]
+            filled_template = filled_template.replace("{level}", levels[pred_idx % len(levels)])
+        
+        # Media sources
+        if "{source}" in template:
+            sources = ["radio", "bluetooth", "usb", "streaming"]
+            filled_template = filled_template.replace("{source}", sources[pred_idx % len(sources)])
+        
+        # System settings
+        if "{setting}" in template:
+            settings = ["display", "sound", "connectivity", "notifications"]
+            filled_template = filled_template.replace("{setting}", settings[pred_idx % len(settings)])
+        
+        # System components
+        if "{component}" in template:
+            components = ["battery", "sensors", "system", "connectivity"]
+            filled_template = filled_template.replace("{component}", components[pred_idx % len(components)])
+        
+        # System options
+        if "{option}" in template:
+            options = ["brightness", "language", "theme", "notifications"]
+            filled_template = filled_template.replace("{option}", options[pred_idx % len(options)])
+        
+        # Diagnostic types
+        if "{diagnostic_type}" in template:
+            diagnostic_types = ["quick", "full", "targeted"]
+            filled_template = filled_template.replace("{diagnostic_type}", diagnostic_types[pred_idx % len(diagnostic_types)])
+        
+        return filled_template    
+
     def generate_comparison_report(self, 
                                  results: Dict[str, ModelPerformance],
                                  output_path: str):

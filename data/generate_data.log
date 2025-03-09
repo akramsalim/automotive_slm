@@ -1,0 +1,43 @@
+2025-02-28 02:16:46,986 - __main__ - INFO - Initializing command generator...
+2025-02-28 02:16:46,986 - __main__ - INFO - Generating 1000 commands...
+2025-02-28 02:16:46,987 - __main__ - ERROR - Data generation failed: 'AutomotiveCommandGenerator' object has no attribute 'generate_commands'
+Traceback (most recent call last):
+  File "/home/akram/Desktop/automotive_slm/scripts/generate_data.py", line 54, in main
+    commands = generator.generate_commands(
+AttributeError: 'AutomotiveCommandGenerator' object has no attribute 'generate_commands'
+2025-02-28 02:17:41,129 - __main__ - INFO - Initializing command generator...
+2025-02-28 02:17:41,130 - __main__ - INFO - Generating 1000 commands...
+2025-02-28 02:17:41,130 - __main__ - ERROR - Data generation failed: 'AutomotiveCommandGenerator' object has no attribute 'generate_commands'
+Traceback (most recent call last):
+  File "/home/akram/Desktop/automotive_slm/scripts/generate_data.py", line 54, in main
+    commands = generator.generate_commands(
+AttributeError: 'AutomotiveCommandGenerator' object has no attribute 'generate_commands'
+2025-02-28 02:20:54,789 - __main__ - INFO - Initializing command generator...
+2025-02-28 02:20:54,789 - __main__ - INFO - Generating 1000 commands...
+2025-02-28 02:20:54,789 - __main__ - ERROR - Data generation failed: 'command_distribution'
+Traceback (most recent call last):
+  File "/home/akram/Desktop/automotive_slm/scripts/generate_data.py", line 56, in main
+    distribution=config["data"]["command_distribution"]
+KeyError: 'command_distribution'
+2025-02-28 02:25:12,188 - __main__ - INFO - Initializing command generator...
+2025-02-28 02:25:12,188 - __main__ - INFO - Generating 1000 commands...
+2025-02-28 02:25:12,188 - __main__ - INFO - No command distribution found in config, using default distribution
+2025-02-28 02:25:12,192 - __main__ - ERROR - Data generation failed: 1
+Traceback (most recent call last):
+  File "/home/akram/Desktop/automotive_slm/scripts/generate_data.py", line 70, in main
+    commands = generator.generate_commands(
+  File "/home/akram/Desktop/automotive_slm/data/command_generator.py", line 228, in generate_commands
+    type_commands = self.generate_command(cmd_type, num_cmd)
+  File "/home/akram/Desktop/automotive_slm/data/command_generator.py", line 146, in generate_command
+    params[param] = random.choice(valid_values)
+  File "/home/akram/miniconda3/envs/hyspe_joanna/lib/python3.9/random.py", line 346, in choice
+    return seq[self._randbelow(len(seq))]
+KeyError: 1
+2025-02-28 02:28:42,627 - __main__ - INFO - Initializing command generator...
+2025-02-28 02:28:42,628 - __main__ - INFO - Generating 1000 commands...
+2025-02-28 02:28:42,628 - __main__ - INFO - No command distribution found in config, using default distribution
+2025-02-28 02:28:42,628 - __main__ - ERROR - Data generation failed: 'AutomotiveCommandGenerator' object has no attribute 'generate_commands'
+Traceback (most recent call last):
+  File "/home/akram/Desktop/automotive_slm/scripts/generate_data.py", line 70, in main
+    commands = generator.generate_commands(
+AttributeError: 'AutomotiveCommandGenerator' object has no attribute 'generate_commands'
